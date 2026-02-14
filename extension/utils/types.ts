@@ -11,8 +11,14 @@ export interface ContentToBackgroundEvent {
 
 export interface BackgroundToContentRequest {
   source: '__spier__';
-  action: 'getStorage' | 'getDOM';
+  action: 'getStorage' | 'getDOM' | 'click' | 'fill' | 'type' | 'waitForSelector' | 'executeJs';
   requestId: string;
+  selector?: string;
+  value?: string;
+  text?: string;
+  delay?: number;
+  code?: string;
+  timeout?: number;
 }
 
 export interface ContentToBackgroundSnapshot {

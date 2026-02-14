@@ -5,6 +5,7 @@ import type {
   StorageSnapshot,
   DOMSnapshot,
   ScreenshotData,
+  AccessibilityNode,
 } from '../../shared/types';
 import type { PopupState } from '../utils/types';
 
@@ -14,9 +15,40 @@ export default defineBackground(() => {
   let connectionState: 'connected' | 'disconnected' | 'reconnecting' =
     'disconnected';
   let enabled = false;
-  let serverAddress = 'localhost:9222';
+  let serverAddress = 'localhost:12333';
 
   const RECONNECT_DELAY = 3000;
+
+  // --- Tab grouping ---
+  let spierGroupId: number | null = null;
+
+  async function ensureSpierGroup(tabId: number): Promise<void> {
+    try {
+      // Check if our cached group still exists
+      if (spierGroupId != null) {
+        const groups = await chrome.tabGroups.query({ title: '_Spier' });
+        if (!groups.some(g => g.id === spierGroupId)) {
+          spierGroupId = null;
+        }
+      }
+
+      if (spierGroupId == null) {
+        const existing = await chrome.tabGroups.query({ title: '_Spier' });
+        if (existing.length > 0) {
+          spierGroupId = existing[0].id;
+        }
+      }
+
+      if (spierGroupId != null) {
+        await chrome.tabs.group({ tabIds: [tabId], groupId: spierGroupId });
+      } else {
+        spierGroupId = await chrome.tabs.group({ tabIds: [tabId] });
+        await chrome.tabGroups.update(spierGroupId, { title: '_Spier', color: 'cyan' });
+      }
+    } catch {
+      // Never block tab operations if grouping fails
+    }
+  }
 
   // --- ConnectionManager ---
   function connect() {
@@ -263,6 +295,242 @@ export default defineBackground(() => {
               height: 0,
             } as ScreenshotData,
           });
+        }
+        break;
+      }
+
+      // --- Navigation ---
+      case 'navigate': {
+        try {
+          await chrome.tabs.update(msg.tabId, { url: msg.url });
+          await ensureSpierGroup(msg.tabId);
+          send({ type: 'result', requestId: msg.requestId, success: true });
+        } catch (e) {
+          send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
+        }
+        break;
+      }
+
+      case 'goBack': {
+        try {
+          await chrome.tabs.goBack(msg.tabId);
+          send({ type: 'result', requestId: msg.requestId, success: true });
+        } catch (e) {
+          send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
+        }
+        break;
+      }
+
+      case 'goForward': {
+        try {
+          await chrome.tabs.goForward(msg.tabId);
+          send({ type: 'result', requestId: msg.requestId, success: true });
+        } catch (e) {
+          send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
+        }
+        break;
+      }
+
+      case 'reload': {
+        try {
+          await chrome.tabs.reload(msg.tabId);
+          send({ type: 'result', requestId: msg.requestId, success: true });
+        } catch (e) {
+          send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
+        }
+        break;
+      }
+
+      // --- Tab management ---
+      case 'createTab': {
+        try {
+          const tab = await chrome.tabs.create({ url: msg.url || 'about:blank' });
+          if (tab.id != null) await ensureSpierGroup(tab.id);
+          send({ type: 'result', requestId: msg.requestId, success: true, data: { tabId: tab.id, url: tab.url || msg.url || 'about:blank' } });
+        } catch (e) {
+          send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
+        }
+        break;
+      }
+
+      case 'closeTab': {
+        try {
+          await chrome.tabs.remove(msg.tabId);
+          send({ type: 'result', requestId: msg.requestId, success: true });
+        } catch (e) {
+          send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
+        }
+        break;
+      }
+
+      case 'activateTab': {
+        try {
+          const tab = await chrome.tabs.update(msg.tabId, { active: true });
+          if (tab.windowId) {
+            await chrome.windows.update(tab.windowId, { focused: true });
+          }
+          send({ type: 'result', requestId: msg.requestId, success: true });
+        } catch (e) {
+          send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
+        }
+        break;
+      }
+
+      // --- Wait for navigation ---
+      case 'waitForNavigation': {
+        const timeout = msg.timeout || 10000;
+        let resolved = false;
+
+        const listener = (tabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
+          if (resolved || tabId !== msg.tabId) return;
+          if (changeInfo.status === 'complete') {
+            resolved = true;
+            chrome.tabs.onUpdated.removeListener(listener);
+            send({ type: 'result', requestId: msg.requestId, success: true });
+          }
+        };
+
+        chrome.tabs.onUpdated.addListener(listener);
+        setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            chrome.tabs.onUpdated.removeListener(listener);
+            send({ type: 'result', requestId: msg.requestId, success: false, error: 'waitForNavigation timed out' });
+          }
+        }, timeout);
+        break;
+      }
+
+      // --- Content script forwarded actions ---
+      case 'click':
+      case 'fill':
+      case 'type':
+      case 'waitForSelector':
+      case 'executeJs': {
+        try {
+          const response = await chrome.tabs.sendMessage(msg.tabId, {
+            source: '__spier__',
+            action: msg.type,
+            requestId: msg.requestId,
+            ...(msg.type === 'click' && { selector: msg.selector }),
+            ...(msg.type === 'fill' && { selector: msg.selector, value: msg.value }),
+            ...(msg.type === 'type' && { selector: msg.selector, text: msg.text, delay: msg.delay }),
+            ...(msg.type === 'waitForSelector' && { selector: msg.selector, timeout: msg.timeout }),
+            ...(msg.type === 'executeJs' && { code: msg.code }),
+          });
+          send({ type: 'result', requestId: msg.requestId, success: response.success, data: response.data, error: response.error });
+        } catch (e) {
+          send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
+        }
+        break;
+      }
+
+      // --- Accessibility snapshot (CDP) ---
+      case 'getAccessibilitySnapshot': {
+        try {
+          const target = { tabId: msg.tabId };
+          await chrome.debugger.attach(target, '1.3');
+          try {
+            const result = await chrome.debugger.sendCommand(target, 'Accessibility.getFullAXTree') as {
+              nodes: Array<{
+                nodeId: string;
+                parentId?: string;
+                ignored?: boolean;
+                role?: { value: string };
+                name?: { value: string };
+                value?: { value: string };
+                description?: { value: string };
+                properties?: Array<{ name: string; value: { value: unknown } }>;
+                childIds?: string[];
+              }>;
+            };
+
+            const tab = await chrome.tabs.get(msg.tabId);
+            const nodes = result.nodes;
+
+            // Filter out noise
+            const SKIP_ROLES = new Set(['none', 'GenericContainer', 'InlineTextBox']);
+            const validNodes = nodes.filter(n => {
+              if (n.ignored) return false;
+              const role = n.role?.value;
+              if (role && SKIP_ROLES.has(role)) return false;
+              return true;
+            });
+
+            // Build id → node map
+            const nodeMap = new Map<string, typeof validNodes[0]>();
+            for (const n of validNodes) nodeMap.set(n.nodeId, n);
+
+            // Assign refs
+            let refCounter = 0;
+            const refMap = new Map<string, string>();
+            for (const n of validNodes) {
+              refMap.set(n.nodeId, `e${++refCounter}`);
+            }
+
+            // Build tree
+            function buildNode(cdpNode: typeof validNodes[0]): AccessibilityNode {
+              const ref = refMap.get(cdpNode.nodeId) || `e${++refCounter}`;
+              const props = new Map<string, unknown>();
+              if (cdpNode.properties) {
+                for (const p of cdpNode.properties) {
+                  props.set(p.name, p.value.value);
+                }
+              }
+
+              const node: AccessibilityNode = {
+                ref,
+                role: cdpNode.role?.value || 'unknown',
+                name: cdpNode.name?.value || '',
+              };
+
+              if (cdpNode.value?.value) node.value = cdpNode.value.value;
+              if (cdpNode.description?.value) node.description = cdpNode.description.value;
+              if (props.get('focused') === true) node.focused = true;
+              if (props.get('disabled') === true) node.disabled = true;
+              if (props.has('checked')) {
+                const v = props.get('checked');
+                node.checked = v === 'mixed' ? 'mixed' : v === true || v === 'true';
+              }
+              if (props.has('expanded')) node.expanded = props.get('expanded') === true;
+              if (props.has('selected')) node.selected = props.get('selected') === true;
+              if (props.has('level')) node.level = props.get('level') as number;
+
+              // Build children
+              if (cdpNode.childIds) {
+                const children: AccessibilityNode[] = [];
+                for (const childId of cdpNode.childIds) {
+                  const childCdp = nodeMap.get(childId);
+                  if (childCdp) {
+                    children.push(buildNode(childCdp));
+                  }
+                }
+                if (children.length > 0) node.children = children;
+              }
+
+              return node;
+            }
+
+            // Find root (first node without parent or first node)
+            const root = validNodes.find(n => !n.parentId || !nodeMap.has(n.parentId)) || validNodes[0];
+            const tree = root ? buildNode(root) : { ref: 'e0', role: 'RootWebArea', name: '' };
+
+            send({
+              type: 'result',
+              requestId: msg.requestId,
+              success: true,
+              data: {
+                tabId: msg.tabId,
+                url: tab.url || '',
+                title: tab.title || '',
+                tree,
+              },
+            });
+          } finally {
+            try { await chrome.debugger.detach(target); } catch {}
+          }
+        } catch (e) {
+          send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
         }
         break;
       }

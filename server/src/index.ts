@@ -2,10 +2,11 @@ import type { SpierEventType } from "../../shared/types.js";
 import { app } from "./http.js";
 import * as ws from "./ws.js";
 import type { WsData } from "./ws.js";
+import { log } from "./logger.js";
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  let port = 9222;
+  let port = 12333;
   let host = "localhost";
 
   for (let i = 0; i < args.length; i++) {
@@ -68,6 +69,6 @@ Bun.serve<WsData>({
   },
 });
 
-console.log(`Spier server running on http://${host}:${port}`);
-console.log(`  Extension WS: ws://${host}:${port}/extension`);
-console.log(`  Subscribe WS: ws://${host}:${port}/subscribe`);
+log.system(`Spier server running on http://${host}:${port}`);
+log.system(`  Extension WS: ws://${host}:${port}/extension`);
+log.system(`  Subscribe WS: ws://${host}:${port}/subscribe`);

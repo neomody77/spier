@@ -320,4 +320,40 @@ export default defineUnlistedScript(() => {
   } catch {
     // Never break the page
   }
+
+  // --- Execute JS bridge (content script → MAIN world) ---
+  try {
+    window.addEventListener('message', (event) => {
+      if (event.data?.source !== '__spier_exec__') return;
+
+      const { id, code } = event.data;
+      if (!id || !code) return;
+
+      (async () => {
+        try {
+          let result = (0, eval)(code);
+          if (result instanceof Promise) {
+            result = await result;
+          }
+          // Serialize safely
+          let data: unknown;
+          try {
+            data = JSON.parse(JSON.stringify(result === undefined ? null : result));
+          } catch {
+            data = String(result);
+          }
+          window.postMessage({ source: '__spier_exec_result__', id, success: true, data }, '*');
+        } catch (e) {
+          window.postMessage({
+            source: '__spier_exec_result__',
+            id,
+            success: false,
+            error: e instanceof Error ? e.message : String(e),
+          }, '*');
+        }
+      })();
+    });
+  } catch {
+    // Never break the page
+  }
 });
