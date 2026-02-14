@@ -9,7 +9,7 @@ allowed-tools: Bash(spier:*)
 
 Spier consists of a Chrome extension that instruments browser tabs and a local server (default `localhost:12333`) that exposes an HTTP API. All commands below use `curl`.
 
-All files are self-contained in `~/.skills/spier/`.
+All files are self-contained in `~/.claude/skills/spier/`.
 
 ## Auto-start (MUST run on every skill invocation)
 
@@ -17,12 +17,12 @@ Before doing anything else, always ensure the server is running:
 
 ```bash
 # spier:ensure-server
-curl -sf http://localhost:12333/ > /dev/null 2>&1 || { bun ~/.skills/spier/server.js & sleep 0.5; }
+curl -sf http://localhost:12333/ > /dev/null 2>&1 || { bun ~/.claude/skills/spier/server.js & sleep 0.5; }
 curl -s http://localhost:12333/
 ```
 
 If the response shows `"extensionConnected":false`, remind the user:
-> Extension not connected. Load `~/.skills/spier/extension/` in `chrome://extensions` (once), then click the Spier icon to enable it.
+> Extension not connected. Load `~/.claude/skills/spier/extension/` in `chrome://extensions` (once), then click the Spier icon to enable it.
 
 Only proceed to actual commands after the server is confirmed up and the extension is connected.
 

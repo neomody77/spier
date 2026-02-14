@@ -1,0 +1,17 @@
+{
+  "name": "spier-marketplace",
+  "plugins": [
+    {
+      "name": "spier",
+      "source": "./",
+      "description": "Browser runtime inspector — observe and control Chrome tabs via network/console/errors/DOM/storage/accessibility/screenshots",
+      "strict": false,
+      "keywords": ["browser", "inspector", "network", "console", "devtools", "automation"],
+      "skills": ["./skills/spier"]
+    }
+  ],
+  "metadata": {
+    "description": "Marketplace for the Spier browser inspector skill",
+    "version": "1.0.0"
+  }
+}

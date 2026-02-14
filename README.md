@@ -12,25 +12,31 @@ Chrome Extension  ──WebSocket──▶  Server (Bun)  ◀──  MCP / REST 
 - **Server** — Bun HTTP + WebSocket server. Stores events in memory, relays requests to the extension, exposes a REST API.
 - **MCP server** — stdio-based Model Context Protocol server that wraps the REST API, so Claude (or any MCP client) can call tools like `get_network_requests`, `get_screenshot`, `click_element`, `execute_js`, etc.
 
-## Setup
+## Install as Claude Code Plugin
+
+```
+/plugin marketplace add neomody77/spier
+/plugin install spier@neomody77/spier
+```
+
+Then load the Chrome extension from `~/.claude/skills/spier/extension/` in `chrome://extensions`.
+
+## Manual Install
+
+```bash
+git clone https://github.com/neomody77/spier.git /tmp/spier
+cd /tmp/spier && bun install && bash install.sh
+```
+
+## Development
 
 ```bash
 bun install
-```
-
-### Start the server
-
-```bash
 bun run dev:server        # starts on :12333, watches for changes
-```
-
-### Build & load the extension
-
-```bash
 bun run dev:ext           # dev mode with hot reload (via wxt)
 ```
 
-Then load the unpacked extension from `extension/.output/chrome-mv3-dev` in `chrome://extensions`.
+Load the unpacked extension from `extension/.output/chrome-mv3-dev` in `chrome://extensions`.
 
 ### MCP
 
