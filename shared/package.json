@@ -1,0 +1,6 @@
+{
+  "name": "spier-shared",
+  "private": true,
+  "type": "module",
+  "main": "types.ts"
+}
