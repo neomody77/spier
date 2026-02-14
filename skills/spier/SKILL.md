@@ -9,20 +9,32 @@ allowed-tools: Bash(spier:*)
 
 Spier consists of a Chrome extension that instruments browser tabs and a local server (default `localhost:12333`) that exposes an HTTP API. All commands below use `curl`.
 
-All files are self-contained in `~/.claude/skills/spier/`.
+## Setup & Auto-start (MUST run on every skill invocation)
 
-## Auto-start (MUST run on every skill invocation)
+Before doing anything else, run these steps in order:
 
-Before doing anything else, always ensure the server is running:
+### 1. Build (first time only)
+
+If `server.js` doesn't exist yet, build from source:
+
+```bash
+# spier:build
+if [ ! -f "${CLAUDE_PLUGIN_ROOT}/dist/server.js" ]; then
+  cd "${CLAUDE_PLUGIN_ROOT}" && bun install && mkdir -p dist && bun build server/src/index.ts --target=bun --outfile=dist/server.js --minify && cp -r extension/.output/chrome-mv3 dist/extension 2>/dev/null || (cd extension && bun run build && cp -r .output/chrome-mv3 ../dist/extension)
+fi
+ls "${CLAUDE_PLUGIN_ROOT}/dist/server.js"
+```
+
+### 2. Start server
 
 ```bash
 # spier:ensure-server
-curl -sf http://localhost:12333/ > /dev/null 2>&1 || { bun ~/.claude/skills/spier/server.js & sleep 0.5; }
+curl -sf http://localhost:12333/ > /dev/null 2>&1 || { bun "${CLAUDE_PLUGIN_ROOT}/dist/server.js" & sleep 0.5; }
 curl -s http://localhost:12333/
 ```
 
 If the response shows `"extensionConnected":false`, remind the user:
-> Extension not connected. Load `~/.claude/skills/spier/extension/` in `chrome://extensions` (once), then click the Spier icon to enable it.
+> Extension not connected. Load `${CLAUDE_PLUGIN_ROOT}/dist/extension/` in `chrome://extensions` (once), then click the Spier icon to enable it.
 
 Only proceed to actual commands after the server is confirmed up and the extension is connected.
 
