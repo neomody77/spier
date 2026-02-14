@@ -1,5 +1,8 @@
 {
   "name": "spier-marketplace",
+  "owner": {
+    "name": "neomody77"
+  },
   "plugins": [
     {
       "name": "spier",
