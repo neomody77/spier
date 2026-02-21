@@ -1,0 +1,11 @@
+{
+  "name": "spier-cli",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "spier": "./src/main.ts"
+  },
+  "scripts": {
+    "start": "bun run src/main.ts"
+  }
+}

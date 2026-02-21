@@ -1,10 +1,11 @@
 {
   "name": "spier",
   "private": true,
-  "workspaces": ["extension", "server", "shared"],
+  "workspaces": ["extension", "server", "shared", "cli"],
   "scripts": {
     "dev:server": "bun run --watch server/src/index.ts",
     "dev:ext": "cd extension && bun run dev",
-    "mcp": "bun run server/src/mcp.ts"
+    "mcp": "bun run server/src/mcp.ts",
+    "cli": "bun run cli/src/main.ts"
   }
 }

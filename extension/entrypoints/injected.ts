@@ -31,9 +31,38 @@ export default defineUnlistedScript(() => {
     }
   }
 
+  // All postMessage payloads are sent as JSON strings with a unique prefix.
+  // This avoids conflicts with pages that blindly JSON.parse(event.data) on
+  // object-typed messages (e.g. OpenStack Horizon), which would throw
+  // SyntaxError and create an infinite error loop via our error listener.
+  const MSG_PREFIX = '\x00__spier__\x00';
+
+  // Batch queue: buffer events and flush periodically to avoid message storms
+  const FLUSH_INTERVAL = 200; // flush every 200ms
+  const MAX_BATCH = 50; // max events per flush
+  let eventQueue: unknown[] = [];
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function flushEvents() {
+    flushTimer = null;
+    if (eventQueue.length === 0) return;
+    const batch = eventQueue.length > MAX_BATCH
+      ? eventQueue.slice(-MAX_BATCH) // keep newest, drop oldest
+      : eventQueue;
+    eventQueue = [];
+    try {
+      window.postMessage(MSG_PREFIX + JSON.stringify({ batch }), '*');
+    } catch {
+      // Never break the page
+    }
+  }
+
   function post(payload: unknown) {
     try {
-      window.postMessage({ source: '__spier__', payload }, '*');
+      eventQueue.push(payload);
+      if (!flushTimer) {
+        flushTimer = setTimeout(flushEvents, FLUSH_INTERVAL);
+      }
     } catch {
       // Never break the page
     }
@@ -57,15 +86,15 @@ export default defineUnlistedScript(() => {
 
   // --- Console patching ---
   try {
+    const STACK_LEVELS = new Set(['error', 'warn']);
     for (const level of ['log', 'warn', 'error', 'info', 'debug'] as const) {
       console[level] = function (...args: unknown[]) {
         try {
-          const err = new Error();
           post({
             type: 'console',
             level,
             args: args.map(serialize),
-            stack: err.stack,
+            stack: STACK_LEVELS.has(level) ? new Error().stack : undefined,
           });
         } catch {
           // Never break the page
@@ -277,7 +306,7 @@ export default defineUnlistedScript(() => {
           } catch {
             // Never break the page
           }
-        });
+        }, { once: true });
       }
 
       return origXhrSend.call(this, body);
@@ -324,9 +353,13 @@ export default defineUnlistedScript(() => {
   // --- Execute JS bridge (content script → MAIN world) ---
   try {
     window.addEventListener('message', (event) => {
-      if (event.data?.source !== '__spier_exec__') return;
+      // Decode string-prefixed messages from content script
+      if (typeof event.data !== 'string' || !event.data.startsWith(MSG_PREFIX)) return;
+      let msg: any;
+      try { msg = JSON.parse(event.data.slice(MSG_PREFIX.length)); } catch { return; }
+      if (msg?.source !== '__spier_exec__') return;
 
-      const { id, code } = event.data;
+      const { id, code } = msg;
       if (!id || !code) return;
 
       (async () => {
@@ -342,14 +375,14 @@ export default defineUnlistedScript(() => {
           } catch {
             data = String(result);
           }
-          window.postMessage({ source: '__spier_exec_result__', id, success: true, data }, '*');
+          window.postMessage(MSG_PREFIX + JSON.stringify({ source: '__spier_exec_result__', id, success: true, data }), '*');
         } catch (e) {
-          window.postMessage({
+          window.postMessage(MSG_PREFIX + JSON.stringify({
             source: '__spier_exec_result__',
             id,
             success: false,
             error: e instanceof Error ? e.message : String(e),
-          }, '*');
+          }), '*');
         }
       })();
     });

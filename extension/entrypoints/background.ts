@@ -17,36 +17,79 @@ export default defineBackground(() => {
   let enabled = false;
   let serverAddress = 'localhost:12333';
 
-  const RECONNECT_DELAY = 3000;
+  const RECONNECT_DELAY_BASE = 3000;
+  const RECONNECT_DELAY_MAX = 60000;
+  let reconnectDelay = RECONNECT_DELAY_BASE;
 
   // --- Tab grouping ---
   let spierGroupId: number | null = null;
+  let groupVerifiedAt = 0;
+  const GROUP_CACHE_TTL = 5000; // only re-verify group existence every 5s
+
+  // Cache of tab IDs known to be in the _Spier group
+  const spierTabIds = new Set<number>();
+
+  async function refreshSpierGroupId(): Promise<void> {
+    const now = Date.now();
+    if (spierGroupId != null && now - groupVerifiedAt <= GROUP_CACHE_TTL) return;
+    try {
+      const groups = await chrome.tabGroups.query({ title: '_Spier' });
+      spierGroupId = groups.length > 0 ? groups[0].id : null;
+    } catch {
+      spierGroupId = null;
+    }
+    groupVerifiedAt = now;
+  }
+
+  async function getSpierTabIds(): Promise<Set<number>> {
+    await refreshSpierGroupId();
+    if (spierGroupId == null) {
+      spierTabIds.clear();
+      return spierTabIds;
+    }
+    try {
+      const tabs = await chrome.tabs.query({ groupId: spierGroupId });
+      spierTabIds.clear();
+      for (const t of tabs) {
+        if (t.id != null) spierTabIds.add(t.id);
+      }
+    } catch {
+      spierTabIds.clear();
+    }
+    return spierTabIds;
+  }
+
+  async function isTabInSpierGroup(tabId: number): Promise<boolean> {
+    await getSpierTabIds();
+    return spierTabIds.has(tabId);
+  }
 
   async function ensureSpierGroup(tabId: number): Promise<void> {
     try {
-      // Check if our cached group still exists
-      if (spierGroupId != null) {
-        const groups = await chrome.tabGroups.query({ title: '_Spier' });
-        if (!groups.some(g => g.id === spierGroupId)) {
-          spierGroupId = null;
-        }
-      }
-
-      if (spierGroupId == null) {
-        const existing = await chrome.tabGroups.query({ title: '_Spier' });
-        if (existing.length > 0) {
-          spierGroupId = existing[0].id;
-        }
-      }
+      await refreshSpierGroupId();
 
       if (spierGroupId != null) {
         await chrome.tabs.group({ tabIds: [tabId], groupId: spierGroupId });
       } else {
         spierGroupId = await chrome.tabs.group({ tabIds: [tabId] });
         await chrome.tabGroups.update(spierGroupId, { title: '_Spier', color: 'cyan' });
+        groupVerifiedAt = Date.now();
+      }
+      spierTabIds.add(tabId);
+
+      // Notify the content script that this tab is now in the Spier group
+      // so it can initialize even if it started before grouping completed.
+      try {
+        await chrome.tabs.sendMessage(tabId, {
+          source: '__spier__',
+          action: 'spierGroupJoined',
+        });
+      } catch {
+        // Content script may not be ready yet — that's fine, it will check on its own
       }
     } catch {
-      // Never block tab operations if grouping fails
+      // If grouping fails (e.g. group was deleted), reset cache and don't block
+      spierGroupId = null;
     }
   }
 
@@ -67,6 +110,7 @@ export default defineBackground(() => {
 
       ws.onopen = () => {
         connectionState = 'connected';
+        reconnectDelay = RECONNECT_DELAY_BASE;
         updateBadge();
       };
 
@@ -75,7 +119,8 @@ export default defineBackground(() => {
         if (enabled) {
           connectionState = 'reconnecting';
           updateBadge();
-          setTimeout(connect, RECONNECT_DELAY);
+          setTimeout(connect, reconnectDelay);
+          reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_DELAY_MAX);
         } else {
           connectionState = 'disconnected';
           updateBadge();
@@ -96,7 +141,8 @@ export default defineBackground(() => {
     } catch {
       connectionState = 'reconnecting';
       updateBadge();
-      setTimeout(connect, RECONNECT_DELAY);
+      setTimeout(connect, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_DELAY_MAX);
     }
   }
 
@@ -110,9 +156,10 @@ export default defineBackground(() => {
   async function handleServerMessage(msg: ServerRequest) {
     switch (msg.type) {
       case 'getTabs': {
+        const groupedIds = await getSpierTabIds();
         const tabs = await chrome.tabs.query({});
         const tabInfos: TabInfo[] = tabs
-          .filter((t) => t.id != null)
+          .filter((t) => t.id != null && groupedIds.has(t.id!))
           .map((t) => ({
             tabId: t.id!,
             url: t.url || '',
@@ -201,6 +248,7 @@ export default defineBackground(() => {
       }
 
       case 'getScreenshot': {
+        let bitmap: ImageBitmap | null = null;
         try {
           const tab = await chrome.tabs.get(msg.tabId);
 
@@ -216,7 +264,7 @@ export default defineBackground(() => {
           // Decode to get dimensions and optionally resize
           const response = await fetch(dataUrl);
           const blob = await response.blob();
-          let bitmap = await createImageBitmap(blob);
+          bitmap = await createImageBitmap(blob);
           let { width, height } = bitmap;
 
           const maxW = msg.maxWidth;
@@ -240,6 +288,7 @@ export default defineBackground(() => {
               const ctx = canvas.getContext('2d')!;
               ctx.drawImage(bitmap, 0, 0, targetW, targetH);
               bitmap.close();
+              bitmap = null;
 
               const resizedBlob = await canvas.convertToBlob({
                 type: 'image/jpeg',
@@ -247,11 +296,12 @@ export default defineBackground(() => {
               });
               const arrayBuf = await resizedBlob.arrayBuffer();
               const bytes = new Uint8Array(arrayBuf);
-              let binary = '';
-              for (let i = 0; i < bytes.length; i++) {
-                binary += String.fromCharCode(bytes[i]);
+              // Convert in 8KB chunks to avoid call stack overflow
+              const chunks: string[] = [];
+              for (let i = 0; i < bytes.length; i += 8192) {
+                chunks.push(String.fromCharCode(...bytes.subarray(i, i + 8192)));
               }
-              const resizedDataUrl = `data:image/jpeg;base64,${btoa(binary)}`;
+              const resizedDataUrl = `data:image/jpeg;base64,${btoa(chunks.join(''))}`;
 
               const screenshot: ScreenshotData = {
                 tabId: msg.tabId,
@@ -270,6 +320,7 @@ export default defineBackground(() => {
           }
 
           bitmap.close();
+          bitmap = null;
 
           const screenshot: ScreenshotData = {
             tabId: msg.tabId,
@@ -295,6 +346,10 @@ export default defineBackground(() => {
               height: 0,
             } as ScreenshotData,
           });
+        } finally {
+          if (bitmap) {
+            try { bitmap.close(); } catch {}
+          }
         }
         break;
       }
@@ -365,10 +420,7 @@ export default defineBackground(() => {
 
       case 'activateTab': {
         try {
-          const tab = await chrome.tabs.update(msg.tabId, { active: true });
-          if (tab.windowId) {
-            await chrome.windows.update(tab.windowId, { focused: true });
-          }
+          await chrome.tabs.update(msg.tabId, { active: true });
           send({ type: 'result', requestId: msg.requestId, success: true });
         } catch (e) {
           send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
@@ -468,8 +520,9 @@ export default defineBackground(() => {
               refMap.set(n.nodeId, `e${++refCounter}`);
             }
 
-            // Build tree
-            function buildNode(cdpNode: typeof validNodes[0]): AccessibilityNode {
+            // Build tree (with depth limit to avoid stack overflow on pathological DOMs)
+            const MAX_DEPTH = 100;
+            function buildNode(cdpNode: typeof validNodes[0], depth = 0): AccessibilityNode {
               const ref = refMap.get(cdpNode.nodeId) || `e${++refCounter}`;
               const props = new Map<string, unknown>();
               if (cdpNode.properties) {
@@ -496,13 +549,13 @@ export default defineBackground(() => {
               if (props.has('selected')) node.selected = props.get('selected') === true;
               if (props.has('level')) node.level = props.get('level') as number;
 
-              // Build children
-              if (cdpNode.childIds) {
+              // Build children (stop recursion at MAX_DEPTH)
+              if (cdpNode.childIds && depth < MAX_DEPTH) {
                 const children: AccessibilityNode[] = [];
                 for (const childId of cdpNode.childIds) {
                   const childCdp = nodeMap.get(childId);
                   if (childCdp) {
-                    children.push(buildNode(childCdp));
+                    children.push(buildNode(childCdp, depth + 1));
                   }
                 }
                 if (children.length > 0) node.children = children;
@@ -539,9 +592,11 @@ export default defineBackground(() => {
 
   // --- Handle messages from content scripts and popup ---
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // Content script forwarding intercepted events
+    // Content script forwarding intercepted events (single)
     if (message.source === '__spier__' && message.action === 'event') {
       if (!enabled || !sender.tab?.id) return;
+      // Only accept events from tabs in the _Spier group
+      if (!spierTabIds.has(sender.tab.id)) return;
       const eventData = {
         ...message.data,
         tabId: sender.tab.id,
@@ -549,6 +604,31 @@ export default defineBackground(() => {
       };
       send({ type: 'event', data: eventData });
       return;
+    }
+
+    // Content script forwarding batched events
+    if (message.source === '__spier__' && message.action === 'eventBatch') {
+      if (!enabled || !sender.tab?.id || !Array.isArray(message.batch)) return;
+      // Only accept events from tabs in the _Spier group
+      if (!spierTabIds.has(sender.tab.id)) return;
+      const tabId = sender.tab.id;
+      const now = Date.now();
+      for (const data of message.batch) {
+        send({ type: 'event', data: { ...data, tabId, timestamp: now } });
+      }
+      return;
+    }
+
+    // Content script asks if its tab is in the _Spier group
+    if (message.source === '__spier__' && message.action === 'checkSpierGroup') {
+      if (!sender.tab?.id) {
+        sendResponse({ inGroup: false });
+        return true;
+      }
+      isTabInSpierGroup(sender.tab.id).then((inGroup) => {
+        sendResponse({ inGroup });
+      });
+      return true; // async sendResponse
     }
 
     // Content script forwarding snapshot responses
@@ -563,13 +643,13 @@ export default defineBackground(() => {
 
     // Popup: get current state
     if (message.action === 'getState') {
-      chrome.tabs.query({}).then((tabs) => {
+      getSpierTabIds().then((ids) => {
         const state: PopupState = {
           enabled,
           connected: connectionState === 'connected',
           reconnecting: connectionState === 'reconnecting',
           serverAddress,
-          tabCount: tabs.length,
+          tabCount: ids.size,
         };
         sendResponse(state);
       });
@@ -631,6 +711,19 @@ export default defineBackground(() => {
       chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
     }
   }
+
+  // --- Track tab removal from Spier group ---
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    spierTabIds.delete(tabId);
+  });
+
+  // When a tab's group changes, refresh the cached set
+  chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+    if (changeInfo.groupId !== undefined) {
+      // Group membership changed — invalidate cache so next check is fresh
+      groupVerifiedAt = 0;
+    }
+  });
 
   // --- Keep-alive alarm ---
   chrome.alarms.create('spier-keepalive', { periodInMinutes: 25 / 60 });

@@ -129,12 +129,17 @@ function broadcastToSubscribers(event: SpierEvent) {
   }
 }
 
+const MAX_PENDING_REQUESTS = 100;
+
 export function requestSnapshot(
   request: Omit<ServerRequest, "requestId">,
   timeoutMs = 10000
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (!extensionWs) return reject(new Error("extension not connected"));
+    if (pendingRequests.size >= MAX_PENDING_REQUESTS) {
+      return reject(new Error("too many pending requests"));
+    }
 
     const requestId = `req_${++reqCounter}_${Date.now()}`;
     const startTime = Date.now();
