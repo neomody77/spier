@@ -1,5 +1,6 @@
 {
   "name": "spier",
+  "version": "0.1.0",
   "private": true,
   "workspaces": ["extension", "server", "shared", "cli"],
   "scripts": {
