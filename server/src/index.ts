@@ -23,6 +23,8 @@ function parseArgs() {
 
 const { port, host } = parseArgs();
 
+process.title = "spier-server";
+
 const wss = createWss();
 
 const server = serve({
