@@ -1,7 +1,7 @@
-import type { SpierEventType } from "../../shared/types.js";
+import { createServer } from "node:http";
+import { serve } from "@hono/node-server";
 import { app } from "./http.js";
-import * as ws from "./ws.js";
-import type { WsData } from "./ws.js";
+import { createWss, handleUpgrade } from "./ws.js";
 import { log } from "./logger.js";
 
 function parseArgs() {
@@ -23,50 +23,17 @@ function parseArgs() {
 
 const { port, host } = parseArgs();
 
-Bun.serve<WsData>({
+const wss = createWss();
+
+const server = serve({
+  fetch: app.fetch,
   port,
   hostname: host,
+  createServer,
+});
 
-  fetch(req, server) {
-    const url = new URL(req.url);
-
-    if (url.pathname === "/extension") {
-      const upgraded = server.upgrade(req, {
-        data: { role: "extension" as const },
-      });
-      return upgraded ? undefined : new Response("WebSocket upgrade failed", { status: 400 });
-    }
-
-    if (url.pathname === "/subscribe") {
-      const typesParam = url.searchParams.get("types");
-      const tabIdParam = url.searchParams.get("tabId");
-
-      const data: WsData = {
-        role: "subscriber" as const,
-        types: typesParam
-          ? (typesParam.split(",").filter(Boolean) as SpierEventType[])
-          : undefined,
-        tabId: tabIdParam ? Number(tabIdParam) : undefined,
-      };
-
-      const upgraded = server.upgrade(req, { data });
-      return upgraded ? undefined : new Response("WebSocket upgrade failed", { status: 400 });
-    }
-
-    return app.fetch(req);
-  },
-
-  websocket: {
-    open(wsConn) {
-      ws.handleOpen(wsConn);
-    },
-    close(wsConn) {
-      ws.handleClose(wsConn);
-    },
-    message(wsConn, message) {
-      ws.handleMessage(wsConn, message);
-    },
-  },
+server.on("upgrade", (req, socket, head) => {
+  handleUpgrade(wss, req, socket, head);
 });
 
 log.system(`Spier server running on http://${host}:${port}`);

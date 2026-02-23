@@ -3,15 +3,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
-    "mcp": "bun run src/mcp.ts"
+    "dev": "npx tsx --watch src/index.ts",
+    "start": "npx tsx src/index.ts",
+    "mcp": "npx tsx src/mcp.ts"
   },
   "dependencies": {
     "hono": "^4.7.0",
+    "@hono/node-server": "^1.13.0",
+    "ws": "^8.18.0",
     "@modelcontextprotocol/sdk": "^1.6.0",
-    "zod": "^3.24.0"
+    "zod": "^3.24.0",
+    "tsx": "^4.0.0"
   },
   "devDependencies": {
-    "@types/bun": "^1.2.0"
+    "@types/ws": "^8.5.0"
   }
 }

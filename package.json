@@ -3,9 +3,10 @@
   "private": true,
   "workspaces": ["extension", "server", "shared", "cli"],
   "scripts": {
-    "dev:server": "bun run --watch server/src/index.ts",
-    "dev:ext": "cd extension && bun run dev",
-    "mcp": "bun run server/src/mcp.ts",
-    "cli": "bun run cli/src/main.ts"
+    "dev:server": "npx tsx --watch server/src/index.ts",
+    "dev:ext": "cd extension && npm run dev",
+    "start": "npx tsx server/src/index.ts",
+    "mcp": "npx tsx server/src/mcp.ts",
+    "cli": "npx tsx cli/src/main.ts"
   }
 }

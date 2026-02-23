@@ -1,4 +1,5 @@
-import type { ServerWebSocket } from "bun";
+import { WebSocket as WsWebSocket, WebSocketServer } from "ws";
+import type { IncomingMessage } from "node:http";
 import type {
   ExtensionMessage,
   ServerRequest,
@@ -14,6 +15,10 @@ export interface WsData {
   tabId?: number;
 }
 
+interface SpierWebSocket extends WsWebSocket {
+  data: WsData;
+}
+
 interface PendingRequest {
   resolve: (data: unknown) => void;
   reject: (err: Error) => void;
@@ -22,8 +27,8 @@ interface PendingRequest {
   startTime: number;
 }
 
-let extensionWs: ServerWebSocket<WsData> | null = null;
-const subscribers = new Set<ServerWebSocket<WsData>>();
+let extensionWs: SpierWebSocket | null = null;
+const subscribers = new Set<SpierWebSocket>();
 const pendingRequests = new Map<string, PendingRequest>();
 let reqCounter = 0;
 
@@ -35,7 +40,58 @@ export function subscriberCount(): number {
   return subscribers.size;
 }
 
-export function handleOpen(ws: ServerWebSocket<WsData>) {
+export function createWss(): WebSocketServer {
+  const wss = new WebSocketServer({ noServer: true });
+
+  wss.on("connection", (ws: SpierWebSocket) => {
+    ws.on("message", (raw) => {
+      handleMessage(ws, typeof raw === "string" ? raw : raw.toString());
+    });
+    ws.on("close", () => handleClose(ws));
+    ws.on("error", () => ws.close());
+    handleOpen(ws);
+  });
+
+  return wss;
+}
+
+export function handleUpgrade(
+  wss: WebSocketServer,
+  req: IncomingMessage,
+  socket: any,
+  head: Buffer,
+): void {
+  const url = new URL(req.url || "/", `http://${req.headers.host}`);
+
+  if (url.pathname === "/extension") {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      (ws as SpierWebSocket).data = { role: "extension" };
+      wss.emit("connection", ws, req);
+    });
+    return;
+  }
+
+  if (url.pathname === "/subscribe") {
+    const typesParam = url.searchParams.get("types");
+    const tabIdParam = url.searchParams.get("tabId");
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      (ws as SpierWebSocket).data = {
+        role: "subscriber",
+        types: typesParam
+          ? (typesParam.split(",").filter(Boolean) as SpierEventType[])
+          : undefined,
+        tabId: tabIdParam ? Number(tabIdParam) : undefined,
+      };
+      wss.emit("connection", ws, req);
+    });
+    return;
+  }
+
+  socket.destroy();
+}
+
+function handleOpen(ws: SpierWebSocket) {
   if (ws.data.role === "extension") {
     if (extensionWs) {
       log.warn("new extension connected — replacing previous connection");
@@ -49,7 +105,7 @@ export function handleOpen(ws: ServerWebSocket<WsData>) {
   }
 }
 
-export function handleClose(ws: ServerWebSocket<WsData>) {
+function handleClose(ws: SpierWebSocket) {
   if (ws.data.role === "extension") {
     if (extensionWs === ws) {
       extensionWs = null;
@@ -68,12 +124,10 @@ export function handleClose(ws: ServerWebSocket<WsData>) {
   }
 }
 
-export function handleMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
+function handleMessage(ws: SpierWebSocket, raw: string) {
   if (ws.data.role !== "extension") return;
 
-  const msg: ExtensionMessage = JSON.parse(
-    typeof raw === "string" ? raw : raw.toString()
-  );
+  const msg: ExtensionMessage = JSON.parse(raw);
 
   switch (msg.type) {
     case "event":

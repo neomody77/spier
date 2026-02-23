@@ -13,28 +13,35 @@ Spier consists of a Chrome extension that instruments browser tabs and a local s
 
 Before doing anything else, run these steps in order:
 
-### 1. Build (first time only)
-
-If `server.js` doesn't exist yet, build from source:
+### 1. Install dependencies (first time only)
 
 ```bash
-# spier:build
-if [ ! -f "${CLAUDE_PLUGIN_ROOT}/dist/server.js" ]; then
-  cd "${CLAUDE_PLUGIN_ROOT}" && bun install && mkdir -p dist && bun build server/src/index.ts --target=bun --outfile=dist/server.js --minify && cp -r extension/.output/chrome-mv3 dist/extension 2>/dev/null || (cd extension && bun run build && cp -r .output/chrome-mv3 ../dist/extension)
+# spier:setup
+if [ ! -d "${CLAUDE_PLUGIN_ROOT}/node_modules/hono" ]; then
+  cd "${CLAUDE_PLUGIN_ROOT}" && npm install --no-audit --no-fund 2>&1 | tail -1
 fi
-ls "${CLAUDE_PLUGIN_ROOT}/dist/server.js"
 ```
 
-### 2. Start server
+### 2. Build extension (first time only)
+
+```bash
+# spier:build-ext
+if [ ! -d "${CLAUDE_PLUGIN_ROOT}/extension/.output/chrome-mv3" ]; then
+  cd "${CLAUDE_PLUGIN_ROOT}/extension" && npm run build 2>&1 | tail -3
+fi
+ls "${CLAUDE_PLUGIN_ROOT}/extension/.output/chrome-mv3/manifest.json"
+```
+
+### 3. Start server
 
 ```bash
 # spier:ensure-server
-curl -sf http://localhost:12333/ > /dev/null 2>&1 || { bun "${CLAUDE_PLUGIN_ROOT}/dist/server.js" & sleep 0.5; }
+curl -sf http://localhost:12333/ > /dev/null 2>&1 || { cd "${CLAUDE_PLUGIN_ROOT}" && npx tsx server/src/index.ts & sleep 0.5; }
 curl -s http://localhost:12333/
 ```
 
 If the response shows `"extensionConnected":false`, remind the user:
-> Extension not connected. Load `${CLAUDE_PLUGIN_ROOT}/dist/extension/` in `chrome://extensions` (once), then click the Spier icon to enable it.
+> Extension not connected. Load `${CLAUDE_PLUGIN_ROOT}/extension/.output/chrome-mv3/` in `chrome://extensions` (once), then click the Spier icon to enable it.
 
 Only proceed to actual commands after the server is confirmed up and the extension is connected.
 
