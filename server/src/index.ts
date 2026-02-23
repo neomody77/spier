@@ -7,7 +7,7 @@ import { log } from "./logger.js";
 function parseArgs() {
   const args = process.argv.slice(2);
   let port = 12333;
-  let host = "localhost";
+  let host = "0.0.0.0";
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) {
