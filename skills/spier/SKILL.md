@@ -26,10 +26,10 @@ fi
 
 ```bash
 # spier:build-ext
-if [ ! -d "${CLAUDE_PLUGIN_ROOT}/extension/.output/chrome-mv3" ]; then
+if [ ! -d "${CLAUDE_PLUGIN_ROOT}/extension/dist/chrome-mv3" ]; then
   cd "${CLAUDE_PLUGIN_ROOT}/extension" && npm run build 2>&1 | tail -3
 fi
-ls "${CLAUDE_PLUGIN_ROOT}/extension/.output/chrome-mv3/manifest.json"
+ls "${CLAUDE_PLUGIN_ROOT}/extension/dist/chrome-mv3/manifest.json"
 ```
 
 ### 3. Start server
@@ -41,7 +41,7 @@ curl -s http://localhost:12333/
 ```
 
 If the response shows `"extensionConnected":false`, remind the user:
-> Extension not connected. Load `${CLAUDE_PLUGIN_ROOT}/extension/.output/chrome-mv3/` in `chrome://extensions` (once), then click the Spier icon to enable it.
+> Extension not connected. Load `${CLAUDE_PLUGIN_ROOT}/extension/dist/chrome-mv3/` in `chrome://extensions` (once), then click the Spier icon to enable it.
 
 Only proceed to actual commands after the server is confirmed up and the extension is connected.
 
