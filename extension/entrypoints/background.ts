@@ -29,6 +29,16 @@ export default defineBackground(() => {
   // Cache of tab IDs known to be in the _Spier group
   const spierTabIds = new Set<number>();
 
+  // Persistent debugger connections per tab (avoids repeated attach/detach
+  // which causes Chrome to steal window focus each time)
+  const debuggerAttached = new Set<number>();
+
+  async function ensureDebugger(tabId: number): Promise<void> {
+    if (debuggerAttached.has(tabId)) return;
+    await chrome.debugger.attach({ tabId }, '1.3');
+    debuggerAttached.add(tabId);
+  }
+
   async function refreshSpierGroupId(): Promise<void> {
     const now = Date.now();
     if (spierGroupId != null && now - groupVerifiedAt <= GROUP_CACHE_TTL) return;
@@ -457,8 +467,7 @@ export default defineBackground(() => {
       case 'click':
       case 'fill':
       case 'type':
-      case 'waitForSelector':
-      case 'executeJs': {
+      case 'waitForSelector': {
         try {
           const response = await chrome.tabs.sendMessage(msg.tabId, {
             source: '__spier__',
@@ -468,7 +477,6 @@ export default defineBackground(() => {
             ...(msg.type === 'fill' && { selector: msg.selector, value: msg.value }),
             ...(msg.type === 'type' && { selector: msg.selector, text: msg.text, delay: msg.delay }),
             ...(msg.type === 'waitForSelector' && { selector: msg.selector, timeout: msg.timeout }),
-            ...(msg.type === 'executeJs' && { code: msg.code }),
           });
           send({ type: 'result', requestId: msg.requestId, success: response.success, data: response.data, error: response.error });
         } catch (e) {
@@ -477,13 +485,51 @@ export default defineBackground(() => {
         break;
       }
 
+      // Execute JS via CDP Runtime.evaluate — bypasses page CSP restrictions
+      case 'executeJs': {
+        try {
+          await ensureDebugger(msg.tabId);
+          const result = await chrome.debugger.sendCommand(
+            { tabId: msg.tabId },
+            'Runtime.evaluate',
+            {
+              expression: msg.code,
+              returnByValue: true,
+              awaitPromise: true,
+              userGesture: true,
+            },
+          ) as {
+            result?: { type: string; value?: unknown; description?: string };
+            exceptionDetails?: { exception?: { description?: string }; text?: string };
+          };
+
+          if (result.exceptionDetails) {
+            const err = result.exceptionDetails.exception?.description
+              || result.exceptionDetails.text
+              || 'Script execution failed';
+            send({ type: 'result', requestId: msg.requestId, success: false, error: err });
+          } else {
+            let data: unknown;
+            try {
+              data = JSON.stringify(result.result?.value);
+            } catch {
+              data = String(result.result?.value);
+            }
+            send({ type: 'result', requestId: msg.requestId, success: true, data });
+          }
+        } catch (e) {
+          debuggerAttached.delete(msg.tabId);
+          send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
+        }
+        break;
+      }
+
       // --- Accessibility snapshot (CDP) ---
       case 'getAccessibilitySnapshot': {
         try {
-          const target = { tabId: msg.tabId };
-          await chrome.debugger.attach(target, '1.3');
-          try {
-            const result = await chrome.debugger.sendCommand(target, 'Accessibility.getFullAXTree') as {
+          await ensureDebugger(msg.tabId);
+          {
+            const result = await chrome.debugger.sendCommand({ tabId: msg.tabId }, 'Accessibility.getFullAXTree') as {
               nodes: Array<{
                 nodeId: string;
                 parentId?: string;
@@ -579,10 +625,9 @@ export default defineBackground(() => {
                 tree,
               },
             });
-          } finally {
-            try { await chrome.debugger.detach(target); } catch {}
           }
         } catch (e) {
+          debuggerAttached.delete(msg.tabId);
           send({ type: 'result', requestId: msg.requestId, success: false, error: (e as Error).message });
         }
         break;
@@ -715,6 +760,15 @@ export default defineBackground(() => {
   // --- Track tab removal from Spier group ---
   chrome.tabs.onRemoved.addListener((tabId) => {
     spierTabIds.delete(tabId);
+    if (debuggerAttached.has(tabId)) {
+      debuggerAttached.delete(tabId);
+      try { chrome.debugger.detach({ tabId }); } catch {}
+    }
+  });
+
+  // Clean up when debugger is detached externally (e.g. user closes devtools bar)
+  chrome.debugger.onDetach.addListener((source) => {
+    if (source.tabId != null) debuggerAttached.delete(source.tabId);
   });
 
   // When a tab's group changes, refresh the cached set
